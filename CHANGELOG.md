@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-07-24
+
+### Added
+- `tautulli_metadata` — full metadata for a single item by rating key: summary, cast/crew, genres, ratings, and media quality (resolution, codecs, HDR/Dolby Vision, file size, bitrate)
+- `tautulli_item_stats` — per-item watch stats (plays/time over 24h/7d/30d/all) plus which users watched it
+- `tautulli_library_media_info` — per-library media-quality breakdown: total size, item count, and per-item resolution/codec/container/size (find the largest files)
+- `tautulli_search` and `tautulli_recently_added` now surface `[key: N]` rating keys; `tautulli_library_stats` now surfaces `[id: N]` section ids — so the new item/library tools are reachable from search output
+
+### Security / Privacy
+- New tools minimize PII by design: users appear by friendly name only (usernames, user IDs, emails, and thumbnails from `get_item_user_stats` are dropped), and server file paths from `get_metadata` are never emitted
+
+### Fixed
+- README `tautulli_stream_data` example output now matches the tool's actual field labels (previously showed non-existent `Overall Bitrate`/`Bandwidth`/`Location` lines)
+- All README example output now uses illustrative placeholder data
+- Lint: `_fmt_duration`/`_fmt_bytes` annotations use `float` (PYI041) and `tautulli_status` catches `RuntimeError` rather than a blind `except` (BLE001) — green under current `ruff`
+
 ## [1.2.0] - 2026-06-23
 
 ### Added
@@ -46,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dockerfile for containerized deployment
 - Glama inspection support (glama.json)
 
+[1.3.1]: https://github.com/lodordev/mcp-tautulli/compare/v1.2.0...v1.3.1
 [1.2.0]: https://github.com/lodordev/mcp-tautulli/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/lodordev/mcp-tautulli/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/lodordev/mcp-tautulli/releases/tag/v1.0.0

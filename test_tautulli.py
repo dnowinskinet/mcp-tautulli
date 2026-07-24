@@ -1215,3 +1215,267 @@ class TestEntryPoint:
         with pytest.raises(SystemExit) as exc_info:
             tautulli.main()
         assert exc_info.value.code == 1
+
+
+class TestFmtBytes:
+    """Test _fmt_bytes helper function."""
+
+    def test_fmt_bytes_bytes(self):
+        assert tautulli._fmt_bytes(512) == "512 B"
+
+    def test_fmt_bytes_kb_mb_gb(self):
+        assert tautulli._fmt_bytes(2048) == "2.0 KB"
+        assert tautulli._fmt_bytes(5 * 1024 * 1024) == "5.0 MB"
+        assert tautulli._fmt_bytes(3 * 1024**3) == "3.0 GB"
+
+    def test_fmt_bytes_tb(self):
+        assert tautulli._fmt_bytes(2 * 1024**4) == "2.0 TB"
+
+    def test_fmt_bytes_string_and_invalid(self):
+        assert tautulli._fmt_bytes("1073741824") == "1.0 GB"
+        assert tautulli._fmt_bytes("not-a-number") == "?"
+        assert tautulli._fmt_bytes(None) == "?"
+
+
+class TestTautulliMetadata:
+    """Test tautulli_metadata tool."""
+
+    async def test_metadata_empty_rating_key(self):
+        result = await tautulli.tautulli_metadata(rating_key="")
+        assert "rating_key is required" in result
+
+    async def test_metadata_not_found(self):
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {}
+            result = await tautulli.tautulli_metadata(rating_key="999")
+            assert "No metadata found" in result
+
+    async def test_metadata_full_and_no_file_path_leak(self):
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "full_title": "Game of Thrones - The Red Woman",
+                "media_type": "episode",
+                "year": "2016",
+                "library_name": "TV Shows",
+                "content_rating": "TV-MA",
+                "originally_available_at": "2016-04-24",
+                "duration": "2998290",  # milliseconds
+                "studio": "Revolution Sun Studios",
+                "audience_rating": "7.4",
+                "user_rating": "9.0",
+                "genres": ["Drama", "Fantasy"],
+                "directors": ["Jeremy Podeswa"],
+                "writers": ["David Benioff", "D. B. Weiss"],
+                "actors": ["Emilia Clarke", "Kit Harington"],
+                "summary": "The fate of Jon Snow is revealed.",
+                "guids": ["imdb://tt3658014", "tmdb://1156503", "plex://episode/abc"],
+                "media_info": [
+                    {
+                        "video_full_resolution": "1080p",
+                        "container": "mkv",
+                        "video_codec": "h264",
+                        "audio_codec": "ac3",
+                        "audio_channels": "6",
+                        "bitrate": "10617",
+                        "parts": [
+                            {
+                                "file": "/media/TV Shows/GoT/S06E01.mkv",
+                                "file_size": "3979115377",
+                                "streams": [
+                                    {
+                                        "video_dynamic_range": "SDR",
+                                        "video_dovi_present": 0,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+            result = await tautulli.tautulli_metadata(rating_key="153037")
+            assert "Game of Thrones - The Red Woman (2016)" in result
+            assert "49m 58s" in result  # 2998290 ms == 49m 58s
+            assert "1080p" in result
+            assert "3.7 GB" in result
+            assert "SDR" in result
+            assert "imdb://tt3658014" in result
+            # Public plex guid excluded, file path never leaked
+            assert "plex://episode/abc" not in result
+            assert "/media/TV Shows/GoT/S06E01.mkv" not in result
+            assert "/media/" not in result
+
+
+class TestTautulliItemStats:
+    """Test tautulli_item_stats tool."""
+
+    async def test_item_stats_empty_rating_key(self):
+        result = await tautulli.tautulli_item_stats(rating_key="")
+        assert "rating_key is required" in result
+
+    async def test_item_stats_none_found(self):
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.side_effect = [[], []]
+            result = await tautulli.tautulli_item_stats(rating_key="153037")
+            assert "No watch stats found" in result
+
+    async def test_item_stats_full_and_no_pii_leak(self):
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.side_effect = [
+                [
+                    {"query_days": 7, "total_time": 3600, "total_plays": 2},
+                    {"query_days": 0, "total_time": 57776, "total_plays": 13},
+                ],
+                [
+                    {
+                        "friendly_name": "Jon Snow",
+                        "user_id": 1601089,
+                        "user_thumb": "http://thumb/x.png",
+                        "username": "jsnow@thewinteriscoming.com",
+                        "total_plays": 6,
+                        "total_time": 28743,
+                    },
+                    {
+                        "friendly_name": "DanyKhaleesi69",
+                        "user_id": 8008135,
+                        "user_thumb": "",
+                        "username": "DanyKhaleesi69",
+                        "total_plays": 5,
+                        "total_time": 18583,
+                    },
+                ],
+            ]
+            result = await tautulli.tautulli_item_stats(
+                rating_key="153037", media_type="episode"
+            )
+            assert "all time: 13 plays" in result
+            assert "Jon Snow" in result
+            # Highest plays ranked first
+            assert result.index("Jon Snow") < result.index("DanyKhaleesi69")
+            # PII scrubbed
+            assert "jsnow@thewinteriscoming.com" not in result
+            assert "1601089" not in result
+            assert "8008135" not in result
+            assert "http://thumb/x.png" not in result
+
+    async def test_item_stats_passes_media_type(self):
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.side_effect = [
+                [],
+                [{"friendly_name": "A", "total_plays": 1, "total_time": 60}],
+            ]
+            await tautulli.tautulli_item_stats(rating_key="42", media_type="collection")
+            assert mock_api.call_args_list[0][1].get("media_type") == "collection"
+
+
+class TestTautulliLibraryMediaInfo:
+    """Test tautulli_library_media_info tool."""
+
+    async def test_media_info_empty_section(self):
+        result = await tautulli.tautulli_library_media_info(section_id="")
+        assert "section_id is required" in result
+
+    async def test_media_info_invalid_order_column(self):
+        result = await tautulli.tautulli_library_media_info(
+            section_id="2", order_column="bogus"
+        )
+        assert "Invalid order_column" in result
+
+    async def test_media_info_invalid_order_dir(self):
+        result = await tautulli.tautulli_library_media_info(
+            section_id="2", order_dir="sideways"
+        )
+        assert "Invalid order_dir" in result
+
+    async def test_media_info_no_data(self):
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {"data": []}
+            result = await tautulli.tautulli_library_media_info(section_id="2")
+            assert "No media info found" in result
+
+    async def test_media_info_full(self):
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "recordsTotal": 2,
+                "total_file_size": 5 * 1024**3,
+                "data": [
+                    {
+                        "title": "Dune",
+                        "year": "2021",
+                        "video_resolution": "4k",
+                        "video_codec": "hevc",
+                        "container": "mkv",
+                        "file_size": 3 * 1024**3,
+                        "play_count": 4,
+                    },
+                    {
+                        "title": "Arrival",
+                        "year": "2016",
+                        "video_resolution": "1080",
+                        "video_codec": "h264",
+                        "container": "mp4",
+                        "file_size": 2 * 1024**3,
+                        "play_count": 0,
+                    },
+                ],
+            }
+            result = await tautulli.tautulli_library_media_info(section_id="1")
+            assert "2 items" in result
+            assert "5.0 GB total" in result
+            assert "Dune (2021)" in result
+            assert "3.0 GB" in result
+            assert "4 plays" in result
+            assert "4k:1" in result
+            # Verify request params
+            assert mock_api.call_args[1].get("section_id") == "1"
+            assert mock_api.call_args[1].get("order_column") == "file_size"
+
+    async def test_media_info_length_clamped(self):
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {"data": [{"title": "X"}]}
+            await tautulli.tautulli_library_media_info(section_id="1", length=500)
+            assert mock_api.call_args[1].get("length") == "100"
+
+
+class TestIdentifierSurfacing:
+    """New rating_key / section_id identifiers appear in output."""
+
+    async def test_search_shows_rating_key(self):
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "results_list": {
+                    "movie": [{"title": "Dune", "year": 2021, "rating_key": "12345"}]
+                }
+            }
+            result = await tautulli.tautulli_search(query="dune")
+            assert "[key: 12345]" in result
+
+    async def test_recently_added_shows_rating_key(self):
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "recently_added": [
+                    {
+                        "title": "Dune",
+                        "year": 2021,
+                        "media_type": "movie",
+                        "rating_key": "777",
+                    }
+                ]
+            }
+            result = await tautulli.tautulli_recently_added()
+            assert "[key: 777]" in result
+
+    async def test_library_stats_shows_section_id(self):
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "data": [
+                    {
+                        "section_name": "Movies",
+                        "section_type": "movie",
+                        "section_id": 1,
+                        "count": 500,
+                        "plays": 2000,
+                    }
+                ]
+            }
+            result = await tautulli.tautulli_library_stats()
+            assert "[id: 1]" in result

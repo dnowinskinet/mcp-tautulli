@@ -4,7 +4,7 @@
 
 A single-file [MCP](https://modelcontextprotocol.io/) server for [Tautulli](https://tautulli.com/) — Plex monitoring via Claude Code (or any MCP client).
 
-16 read-only tools. No mutations. All configuration via environment variables.
+19 read-only tools. No mutations. All configuration via environment variables.
 
 ## Prerequisites
 
@@ -115,9 +115,12 @@ mcp-tautulli
 | `tautulli_activity` | Current Plex streaming activity — who's watching what, progress, quality |
 | `tautulli_history` | Recent playback history with filters (user, media type, search, date) — includes transcode decision; pass `include_ip=true` to show client IP (off by default, it's PII) and `include_performance=true` to also fetch per-record bitrate via `get_stream_data` |
 | `tautulli_recently_added` | Recently added content — what's new in your Plex libraries |
-| `tautulli_search` | Search Plex content by title across all libraries |
+| `tautulli_search` | Search Plex content by title across all libraries — output includes `[key: N]` rating keys |
+| `tautulli_metadata` | Full metadata for one item by rating key — summary, cast/crew, genres, ratings, and media quality (resolution, codecs, HDR/Dolby Vision, file size). Server file paths omitted |
+| `tautulli_item_stats` | Watch stats for one item — plays/time over 24h/7d/30d/all, plus which users watched it (friendly name only) |
 | `tautulli_user_stats` | Per-user watch statistics — plays, watch time, last seen |
-| `tautulli_library_stats` | Library item counts, total plays, last played per library |
+| `tautulli_library_stats` | Library item counts, total plays, last played per library — output includes `[id: N]` section ids |
+| `tautulli_library_media_info` | Per-library media-quality breakdown — total size, item count, and per-item resolution/codec/container/size (find largest files) |
 | `tautulli_most_watched` | Top content by plays or duration (TV, movies, music, users) |
 | `tautulli_server_info` | Plex server identity — name, version, platform, connection |
 | `tautulli_status` | Server config and reachability check |
@@ -129,7 +132,9 @@ mcp-tautulli
 | `tautulli_plays_by_hour` | Hourly viewing distribution — when people watch |
 | `tautulli_stream_data` | Detailed stream performance data — bitrate, codec, transcode decision, bandwidth for a specific play (use `row_id` from history or `session_key` from activity) |
 
-All tools are **read-only** — this server does not modify any Tautulli or Plex state.
+All tools are **read-only** — this server does not modify any Tautulli or Plex state. Each tool calls a fixed Tautulli `get_*`/`search` command; there is no passthrough that could reach a write/destructive endpoint.
+
+**Privacy:** user-identifying data is minimized by default — usernames, user IDs, emails, and thumbnails are never emitted (users appear by friendly name only), server file paths are omitted, and client IP addresses are opt-in (`include_ip=true` on `tautulli_history`). Note that Tautulli itself has no read-only API key — the key you configure is a full-access master key, so this server's read-only guarantee lives in its fixed command set, not in the credential.
 
 <details>
 <summary><strong>Example Output</strong></summary>
@@ -163,27 +168,59 @@ Total: 469 plays, avg 67.0/day
 ```
 Stream Performance Data:
 
-Media: Game of Thrones (episode)
+Media: Game of Thrones — The Red Woman (episode)
 
-Quality Profile: Original (20 Mbps 1080p)
-Overall Bitrate: 19842 kbps
-Video Bitrate: 18900 kbps
-Audio Bitrate: 640 kbps
+Quality Profile: Original
+Source Bitrate: 10617 kbps
+Source Video Bitrate: 10233 kbps
+Source Audio Bitrate: 384 kbps
 
+Stream Bitrate: 10617 kbps
 Stream Resolution: 1080p
 Stream Video Codec: h264
 Stream Framerate: 24p
 Stream Audio Codec: ac3
 Stream Audio Channels: 6
 
-Original Container: mkv
-Original Video Codec: h264
-Original Audio Codec: ac3
+Source Container: mkv
+Source Video Codec: h264
+Source Audio Codec: ac3
+Source Resolution: 1080
 
 Video Decision: direct play
 Audio Decision: direct play
-Bandwidth: 19842 kbps
-Location: lan
+```
+
+**`tautulli_metadata`** (pass `[key: N]` from search / recently-added)
+```
+Example Movie (2019) — movie
+
+Library: Movies
+Content Rating: PG-13
+Aired: 2019-05-01
+Duration: 2h 10m
+Ratings: audience 7.9
+Genres: Adventure, Sci-Fi
+Resolution: 1080p
+Container: mkv
+Video Codec: h264
+Audio: eac3 6ch
+File Size: 18.5 GB
+Dynamic Range: SDR
+
+IDs: imdb://tt0000000, tmdb://00000
+```
+
+**`tautulli_library_media_info`** (pass `[id: N]` from library stats)
+```
+Library media info (section 1, 500 items, 4.2 TB total):
+
+Resolutions (top 3): 1080:2, 4k:1
+
+Items (sorted by file_size desc):
+  • Example Feature (2021) — 4k, hevc, mkv, 42.0 GB
+  • Another Movie (2018) — 1080, h264, mkv, 12.3 GB
+  • A Third Film (2016) — 1080, h264, mp4, 9.8 GB
 ```
 
 **`tautulli_search`**

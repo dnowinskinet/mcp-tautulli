@@ -8,8 +8,11 @@ Tools:
   tautulli_history             — Recent playback history
   tautulli_recently_added      — What's new in your Plex libraries
   tautulli_search              — Search Plex content by title
+  tautulli_metadata            — Full metadata for one item (by rating key)
+  tautulli_item_stats          — Per-item watch stats + which users watched it
   tautulli_user_stats          — Per-user watch statistics
   tautulli_library_stats       — Library-level statistics
+  tautulli_library_media_info  — Per-library media quality/size breakdown
   tautulli_most_watched        — Top content by plays (configurable time range)
   tautulli_server_info         — Plex server identity and status
   tautulli_status              — Server configuration and reachability
@@ -19,6 +22,9 @@ Tools:
   tautulli_plays_by_date       — Daily play counts over time by stream type
   tautulli_plays_by_day_of_week — Weekly viewing patterns
   tautulli_plays_by_hour       — Hourly viewing distribution
+
+All tools are strictly read-only. User-identifying data (usernames, user IDs,
+emails, client IPs) and server file paths are omitted or opt-in only.
 
 Environment variables:
   TAUTULLI_URL        — Tautulli base URL (required)
@@ -124,7 +130,7 @@ async def _api(cmd: str, ctx: Context | None = None, **params) -> dict:
 # ── Formatting helpers ───────────────────────────────────────────────────
 
 
-def _fmt_duration(seconds: int | float) -> str:
+def _fmt_duration(seconds: float) -> str:
     """Format seconds into human-readable duration."""
     seconds = int(seconds)
     if seconds < 60:
@@ -138,6 +144,23 @@ def _fmt_duration(seconds: int | float) -> str:
     days = hours // 24
     hours = hours % 24
     return f"{days}d {hours}h {mins}m"
+
+
+def _fmt_bytes(value: float | str | None) -> str:
+    """Format a byte count into a human-readable size."""
+    if value is None:
+        return "?"
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return "?"
+    if num < 1024:
+        return f"{int(num)} B"
+    for unit in ("KB", "MB", "GB", "TB"):
+        num /= 1024
+        if num < 1024 or unit == "TB":
+            return f"{num:.1f} {unit}"
+    return f"{num:.1f} TB"
 
 
 def _fmt_session(s: dict) -> str:
@@ -501,7 +524,9 @@ async def tautulli_recently_added(
                 pass
 
         library_str = f", library: {library}" if library else ""
-        lines.append(f"  {i}. {title} — {mtype}{added_str}{library_str}")
+        rating_key = item.get("rating_key")
+        key_str = f" [key: {rating_key}]" if rating_key else ""
+        lines.append(f"  {i}. {title} — {mtype}{added_str}{library_str}{key_str}")
 
     return "\n".join(lines)
 
@@ -566,10 +591,194 @@ async def tautulli_search(
                 title = f"{title} ({year})"
 
             library_str = f" — {library}" if library else ""
-            lines.append(f"  • {title}{library_str}")
+            rating_key = item.get("rating_key")
+            key_str = f" [key: {rating_key}]" if rating_key else ""
+            lines.append(f"  • {title}{library_str}{key_str}")
         lines.append("")
 
     return "\n".join(lines).rstrip()
+
+
+def _fmt_media_info(media_info: list) -> list[str]:
+    """Summarize a metadata item's media_info (quality/codecs/size) — no paths."""
+    if not media_info:
+        return []
+    m = media_info[0]
+    out: list[str] = []
+    resolution = m.get("video_full_resolution") or m.get("video_resolution")
+    if resolution:
+        out.append(f"Resolution: {resolution}")
+    container = m.get("container")
+    if container:
+        out.append(f"Container: {container}")
+    vcodec = m.get("video_codec")
+    if vcodec:
+        out.append(f"Video Codec: {vcodec}")
+    acodec = m.get("audio_codec")
+    channels = m.get("audio_channels")
+    if acodec:
+        out.append(f"Audio: {acodec}" + (f" {channels}ch" if channels else ""))
+    bitrate = m.get("bitrate")
+    if bitrate:
+        out.append(f"Bitrate: {bitrate} kbps")
+
+    # Dynamic range + file size come from the (path-bearing) parts/streams —
+    # pull only the safe fields, never the file path itself.
+    parts = m.get("parts") or []
+    if parts:
+        part = parts[0]
+        file_size = part.get("file_size")
+        if file_size:
+            out.append(f"File Size: {_fmt_bytes(file_size)}")
+        for stream in part.get("streams") or []:
+            dynamic_range = stream.get("video_dynamic_range")
+            if dynamic_range:
+                dovi = "Dolby Vision" if stream.get("video_dovi_present") else ""
+                out.append(
+                    f"Dynamic Range: {dynamic_range}" + (f" ({dovi})" if dovi else "")
+                )
+                break
+    return out
+
+
+@mcp.tool()
+async def tautulli_metadata(rating_key: str, ctx: Context | None = None) -> str:
+    """Get full metadata for one Plex item — summary, cast/crew, genres, ratings, and media quality.
+
+    Rating keys are shown as ``[key: N]`` in tautulli_search, tautulli_recently_added,
+    and tautulli_library_media_info output. Server file paths are deliberately omitted.
+
+    Args:
+        rating_key: The item's rating key (numeric string).
+    """
+    rating_key = _sanitize_str(str(rating_key))
+    if not rating_key:
+        return "Error: rating_key is required."
+
+    data = await _api("get_metadata", ctx=ctx, rating_key=rating_key)
+    if not data:
+        return f"No metadata found for rating_key {rating_key}."
+
+    title = data.get("full_title") or data.get("title", "Unknown")
+    media_type = data.get("media_type", "")
+    year = data.get("year", "")
+    header = f"{title} ({year})" if year else title
+    lines = [f"{header} — {media_type}" if media_type else header, ""]
+
+    library = data.get("library_name")
+    if library:
+        lines.append(f"Library: {library}")
+    content_rating = data.get("content_rating")
+    if content_rating:
+        lines.append(f"Content Rating: {content_rating}")
+    aired = data.get("originally_available_at")
+    if aired:
+        lines.append(f"Aired: {aired}")
+    duration = data.get("duration")
+    if duration:
+        # Metadata duration is milliseconds.
+        lines.append(f"Duration: {_fmt_duration(int(duration) / 1000)}")
+    studio = data.get("studio")
+    if studio:
+        lines.append(f"Studio: {studio}")
+
+    ratings = []
+    if data.get("audience_rating"):
+        ratings.append(f"audience {data['audience_rating']}")
+    if data.get("rating"):
+        ratings.append(f"critic {data['rating']}")
+    if data.get("user_rating"):
+        ratings.append(f"user {data['user_rating']}")
+    if ratings:
+        lines.append("Ratings: " + ", ".join(ratings))
+
+    genres = data.get("genres") or []
+    if genres:
+        lines.append("Genres: " + ", ".join(genres))
+    directors = data.get("directors") or []
+    if directors:
+        lines.append("Directors: " + ", ".join(directors))
+    writers = data.get("writers") or []
+    if writers:
+        lines.append("Writers: " + ", ".join(writers[:5]))
+    actors = data.get("actors") or []
+    if actors:
+        lines.append("Cast: " + ", ".join(actors[:6]))
+
+    summary = data.get("summary")
+    if summary:
+        lines += ["", summary]
+
+    media_lines = _fmt_media_info(data.get("media_info") or [])
+    if media_lines:
+        lines.append("")
+        lines += media_lines
+
+    # Public catalog IDs (imdb/tmdb/tvdb) are safe to surface.
+    guids = data.get("guids") or []
+    external = [
+        g for g in guids if any(g.startswith(p) for p in ("imdb", "tmdb", "tvdb"))
+    ]
+    if external:
+        lines += ["", "IDs: " + ", ".join(external)]
+
+    return "\n".join(lines)
+
+
+_ITEM_STAT_DAY_LABELS = {"1": "24h", "7": "7d", "30": "30d", "0": "all time"}
+
+
+@mcp.tool()
+async def tautulli_item_stats(
+    rating_key: str, media_type: str = "", ctx: Context | None = None
+) -> str:
+    """Get watch stats for one item — total plays/time over 24h/7d/30d/all, plus which users watched it.
+
+    Users are shown by friendly name only — usernames, user IDs, emails, and
+    thumbnails are deliberately omitted.
+
+    Args:
+        rating_key: The item's rating key (from search/metadata/media-info output).
+        media_type: Only required when rating_key refers to a collection.
+    """
+    rating_key = _sanitize_str(str(rating_key))
+    if not rating_key:
+        return "Error: rating_key is required."
+
+    params: dict = {"rating_key": rating_key}
+    if media_type:
+        params["media_type"] = _sanitize_str(media_type)
+
+    watch = await _api("get_item_watch_time_stats", ctx=ctx, **params)
+    users = await _api("get_item_user_stats", ctx=ctx, **params)
+
+    watch_rows = watch if isinstance(watch, list) else []
+    user_rows = users if isinstance(users, list) else []
+
+    if not watch_rows and not user_rows:
+        return f"No watch stats found for rating_key {rating_key}."
+
+    lines = [f"Watch stats for rating_key {rating_key}:\n"]
+
+    if watch_rows:
+        lines.append("By period:")
+        for row in watch_rows:
+            label = _ITEM_STAT_DAY_LABELS.get(str(row.get("query_days")), "?")
+            plays = row.get("total_plays", 0)
+            time_str = _fmt_duration(row.get("total_time", 0))
+            lines.append(f"  • {label}: {plays} plays, {time_str}")
+
+    if user_rows:
+        # Scrub PII: keep only friendly_name + counts.
+        ranked = sorted(user_rows, key=lambda u: u.get("total_plays", 0), reverse=True)
+        lines.append("\nBy user:")
+        for u in ranked[:15]:
+            name = u.get("friendly_name") or "Unknown"
+            plays = u.get("total_plays", 0)
+            time_str = _fmt_duration(u.get("total_time", 0))
+            lines.append(f"  • {name}: {plays} plays, {time_str}")
+
+    return "\n".join(lines)
 
 
 @mcp.tool()
@@ -625,6 +834,7 @@ async def tautulli_library_stats(ctx: Context | None = None) -> str:
     for lib in libraries:
         name = lib.get("section_name", "?")
         section_type = lib.get("section_type", "")
+        section_id = lib.get("section_id")
         count = lib.get("count", 0)
         plays = lib.get("plays", 0)
         last = lib.get("last_played", "")
@@ -642,9 +852,111 @@ async def tautulli_library_stats(ctx: Context | None = None) -> str:
             count_str = f"{count} items"
 
         last_str = f' — last: "{last}"' if last else ""
+        id_str = f" [id: {section_id}]" if section_id is not None else ""
         lines.append(
-            f"  • {name} ({section_type}): {count_str}, {plays} plays{last_str}"
+            f"  • {name} ({section_type}){id_str}: {count_str}, {plays} plays{last_str}"
         )
+
+    return "\n".join(lines)
+
+
+_MEDIA_INFO_ORDER_COLUMNS = {
+    "added_at",
+    "sort_title",
+    "container",
+    "bitrate",
+    "video_codec",
+    "video_resolution",
+    "video_framerate",
+    "audio_codec",
+    "audio_channels",
+    "file_size",
+    "last_played",
+    "play_count",
+}
+
+
+@mcp.tool()
+async def tautulli_library_media_info(
+    section_id: str,
+    order_column: str = "file_size",
+    order_dir: str = "desc",
+    length: int = 25,
+    search: str = "",
+    ctx: Context | None = None,
+) -> str:
+    """Get a media-quality breakdown for a Plex library — total size, item count, and per-item resolution/codec/size.
+
+    Section IDs are shown as ``[id: N]`` in tautulli_library_stats output. Useful
+    for auditing library quality and finding the largest files. Server file paths
+    are not returned by this endpoint.
+
+    Args:
+        section_id: The Plex library section id.
+        order_column: Sort field — one of file_size, added_at, sort_title, container,
+            bitrate, video_codec, video_resolution, video_framerate, audio_codec,
+            audio_channels, last_played, play_count (default file_size).
+        order_dir: "desc" or "asc" (default desc).
+        length: Number of items to return (default 25, max 100).
+        search: Filter by title text.
+    """
+    section_id = _sanitize_str(str(section_id))
+    if not section_id:
+        return "Error: section_id is required."
+    if order_column not in _MEDIA_INFO_ORDER_COLUMNS:
+        return f"Invalid order_column: must be one of {', '.join(sorted(_MEDIA_INFO_ORDER_COLUMNS))}"
+    order_dir = order_dir.lower()
+    if order_dir not in ("desc", "asc"):
+        return 'Invalid order_dir: must be "desc" or "asc"'
+    length = min(max(1, length), 100)
+
+    params: dict = {
+        "section_id": section_id,
+        "order_column": order_column,
+        "order_dir": order_dir,
+        "start": "0",
+        "length": str(length),
+    }
+    if search:
+        params["search"] = _sanitize_str(search)
+
+    data = await _api("get_library_media_info", ctx=ctx, **params)
+    rows = data.get("data", [])
+    if not rows:
+        return f"No media info found for section {section_id}."
+
+    total = data.get("recordsTotal", len(rows))
+    total_size = data.get("total_file_size")
+    size_str = f", {_fmt_bytes(total_size)} total" if total_size else ""
+    lines = [f"Library media info (section {section_id}, {total} items{size_str}):\n"]
+
+    # Resolution breakdown across the returned rows.
+    res_counts: dict[str, int] = {}
+    for r in rows:
+        res = r.get("video_resolution") or "—"
+        res_counts[res] = res_counts.get(res, 0) + 1
+    if res_counts:
+        breakdown = ", ".join(
+            f"{res}:{n}" for res, n in sorted(res_counts.items(), key=lambda kv: -kv[1])
+        )
+        lines.append(f"Resolutions (top {len(rows)}): {breakdown}\n")
+
+    lines.append(f"Items (sorted by {order_column} {order_dir}):")
+    for r in rows:
+        title = r.get("title", "Unknown")
+        year = r.get("year", "")
+        name = f"{title} ({year})" if year else title
+        res = r.get("video_resolution", "")
+        vcodec = r.get("video_codec", "")
+        container = r.get("container", "")
+        size = r.get("file_size")
+        plays = r.get("play_count", 0)
+
+        details = [d for d in (res, vcodec, container) if d]
+        detail_str = f" — {', '.join(details)}" if details else ""
+        size_part = f", {_fmt_bytes(size)}" if size else ""
+        plays_part = f", {plays} plays" if plays else ""
+        lines.append(f"  • {name}{detail_str}{size_part}{plays_part}")
 
     return "\n".join(lines)
 
@@ -747,7 +1059,7 @@ async def tautulli_status(ctx: Context | None = None) -> str:
         name = data.get("pms_name", "Unknown")
         version = data.get("pms_version", "?")
         lines.append(f'\nReachable: yes — Plex server "{name}" v{version}')
-    except Exception:
+    except RuntimeError:
         lines.append("\nReachable: NO — connection failed")
 
     return "\n".join(lines)
