@@ -1,4 +1,4 @@
-name: Lint
+name: Lint and test customizations
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  lint:
+  lint-and-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -14,5 +14,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install ruff
-      - run: ruff check tautulli.py
-      - run: ruff format --check tautulli.py
+      - run: ruff check tautulli.py tautulli_custom.py test_tautulli_custom.py
+      - run: ruff format --check tautulli.py tautulli_custom.py test_tautulli_custom.py
+      - run: pip install -e . pytest pytest-asyncio pytest-cov
+      - run: pytest test_tautulli_custom.py --no-cov
