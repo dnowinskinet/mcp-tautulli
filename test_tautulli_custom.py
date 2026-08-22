@@ -2,6 +2,9 @@
 
 from unittest.mock import AsyncMock, patch
 
+from fastmcp import Client
+from mcp.types import TextContent
+
 import tautulli_custom
 
 
@@ -54,3 +57,29 @@ class TestCustomizedLibraryMediaInfo:
 
         assert "Unknown Movie (2024)" in result
         assert "[key:" not in result
+
+    async def test_replacement_is_registered_under_original_mcp_tool_name(self):
+        with patch.object(
+            tautulli_custom.upstream, "_api", new_callable=AsyncMock
+        ) as mock_api:
+            mock_api.return_value = {
+                "data": [
+                    {
+                        "rating_key": "4525",
+                        "title": "V for Vendetta",
+                        "year": "2006",
+                    }
+                ],
+                "recordsTotal": 1,
+            }
+
+            async with Client(tautulli_custom.mcp) as client:
+                result = await client.call_tool(
+                    "tautulli_library_media_info",
+                    arguments={"section_id": "1", "length": 1},
+                )
+
+        assert result.content
+        content = result.content[0]
+        assert isinstance(content, TextContent)
+        assert "V for Vendetta (2006) [key: 4525]" in content.text
