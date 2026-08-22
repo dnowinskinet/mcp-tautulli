@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-tautulli"
-version = "1.3.1"
-description = "MCP server for Tautulli — Plex monitoring via Claude Code"
+version = "1.3.1+dn1"
+description = "Customized MCP server for Tautulli — Plex monitoring and recommendation workflows"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-authors = [{ name = "lodordev" }]
+authors = [{ name = "lodordev" }, { name = "Daniel Nowinski" }]
 keywords = ["mcp", "tautulli", "plex", "claude-code", "model-context-protocol"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -27,16 +27,16 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/lodordev/mcp-tautulli"
-Repository = "https://github.com/lodordev/mcp-tautulli"
-Issues = "https://github.com/lodordev/mcp-tautulli/issues"
+Homepage = "https://github.com/dnowinskinet/mcp-tautulli"
+Repository = "https://github.com/dnowinskinet/mcp-tautulli"
+Issues = "https://github.com/dnowinskinet/mcp-tautulli/issues"
 
 [project.scripts]
-mcp-tautulli = "tautulli:main"
+mcp-tautulli = "tautulli_custom:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["."]
-only-include = ["tautulli.py"]
+only-include = ["tautulli.py", "tautulli_custom.py"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
